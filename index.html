@@ -2374,6 +2374,7 @@ function populateFolderSelect(selectedId) {
     folderTreeOrder().map(x => `<option value="${x.f.id}"${selectedId === x.f.id ? ' selected' : ''}>${'\u00a0\u00a0'.repeat(x.depth)}${esc(x.f.name)}</option>`).join('');
 }
 function openDeckModal() {
+  editingDeckId = null;
   document.getElementById('deck-modal-title').textContent = 'New deck';
   document.getElementById('deck-name-input').value = '';
   populateFolderSelect(null);
@@ -2383,6 +2384,7 @@ function openDeckModal() {
   document.getElementById('deck-name-input').onkeydown = e => { if (e.key === 'Enter') saveDeck(); };
 }
 function openDeckModalInFolder(folderId) {
+  editingDeckId = null;
   document.getElementById('deck-modal-title').textContent = 'New deck';
   document.getElementById('deck-name-input').value = '';
   populateFolderSelect(folderId);
@@ -2391,23 +2393,35 @@ function openDeckModalInFolder(folderId) {
   setTimeout(() => document.getElementById('deck-name-input').focus(), 50);
   document.getElementById('deck-name-input').onkeydown = e => { if (e.key === 'Enter') saveDeck(); };
 }
+let editingDeckId = null;
 function openMoveDeckModal(deckId) {
   const deck = state.decks.find(d => d.id === deckId);
   if (!deck) return;
   document.getElementById('deck-modal-title').textContent = 'Move / Rename deck';
   document.getElementById('deck-name-input').value = deck.name;
   populateFolderSelect(deck.folderId);
+  editingDeckId = deckId;
+  const inp = document.getElementById('deck-name-input');
   document.getElementById('deck-overlay').classList.add('open');
-  document.getElementById('deck-overlay').querySelector('.btn-save').onclick = () => {
-    deck.name = document.getElementById('deck-name-input').value.trim() || deck.name;
-    deck.folderId = document.getElementById('deck-folder-select').value || null;
-    save(); closeDeckModal(); renderSidebar(); renderDeckMain();
-    document.getElementById('deck-overlay').querySelector('.btn-save').onclick = saveDeck;
-  };
+  document.getElementById('deck-overlay').querySelector('.btn-save').onclick = saveDeck;
+  inp.onkeydown = e => { if (e.key === 'Enter') saveDeck(); };      // Enter must rename too, not create a new deck
+  setTimeout(() => { inp.focus(); inp.select(); }, 50);
 }
-function closeDeckModal() { document.getElementById('deck-overlay').classList.remove('open'); }
+function closeDeckModal() { document.getElementById('deck-overlay').classList.remove('open'); editingDeckId = null; }
 function saveDeck() {
   const name = document.getElementById('deck-name-input').value.trim();
+  if (editingDeckId) {
+    // editing an existing deck: rename / move it, never create a new one
+    const deck = state.decks.find(d => d.id === editingDeckId);
+    if (deck) {
+      deck.name = name || deck.name;
+      deck.folderId = document.getElementById('deck-folder-select').value || null;
+      if (deck.folderId) { const pf = folderById(deck.folderId); if (pf) pf.collapsed = false; }
+      save(); closeDeckModal(); renderSidebar();
+      if (activeDeckId && !document.getElementById('rev-del-btn')) renderDeckMain();
+    } else closeDeckModal();
+    return;
+  }
   if (!name) return;
   const folderId = document.getElementById('deck-folder-select').value || null;
   if (folderId) { const f = state.folders.find(x => x.id === folderId); if (f) f.collapsed = false; }
