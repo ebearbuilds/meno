@@ -1127,6 +1127,12 @@ body:not(.dark) .review-wrap{position:relative}
   .fmenu button.danger { color: var(--red); }
   .fmenu-note { font-size: 11px; color: var(--text-faint); }
   .fmenu-sep { height: 1px; background: var(--border); margin: 4px 6px; }
+
+  /* ═══ CLOZE "SHOW / REVEAL ALL" — filled in, unmarked, purple ═══ */
+  .btn-skip { font-family: inherit; font-size: 13px; padding: 9px 16px; border-radius: 999px; border: 1px solid var(--border-strong); background: transparent; color: var(--text-muted); cursor: pointer; white-space: nowrap; transition: all .12s; }
+  .btn-skip:hover { color: var(--purple); border-color: var(--purple); }
+  .cloze-display span.cz-skip { color: var(--purple); font-weight: 500; border-radius: 8px; padding: 1px 9px; background: color-mix(in srgb, var(--purple) 15%, transparent); }
+  .feedback.skip { color: var(--purple); }
 </style>
 </head>
 <body>
@@ -3476,6 +3482,8 @@ function renderClozeRev(main, card, pct) {
     <div class="input-row" id="cloze-input-row">
       <input class="recall-input" id="cloze-ans" type="text" placeholder="type the missing word..." autocomplete="off" autocorrect="off" spellcheck="false" />
       <button class="btn-check" onclick="checkCloze()">Check</button>
+      <button class="btn-skip" onclick="skipClozeBlank(false)" title="Fill in this blank without being marked (Shift+Enter)">Show</button>
+      <button class="btn-skip" onclick="skipClozeBlank(true)" title="Fill in every blank and move on, unmarked (Ctrl/⌘+Enter)">Reveal all</button>
     </div>
     <div class="feedback-row">
       <span class="feedback" id="cloze-fb"></span>
@@ -3486,7 +3494,7 @@ function renderClozeRev(main, card, pct) {
   renderClozeStep(card);
   setTimeout(() => {
     const f = document.getElementById('cloze-ans');
-    if (f) { f.focus({ preventScroll: true }); f.onkeydown = e => { if (e.key === 'Enter') checkCloze(); }; }
+    if (f) { f.focus({ preventScroll: true }); f.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); if (e.ctrlKey || e.metaKey) skipClozeBlank(true); else if (e.shiftKey) skipClozeBlank(false); else checkCloze(); } }; }
   }, 50);
 }
 
@@ -3504,7 +3512,9 @@ function renderClozeStep(card) {
 
   const replaceMarker = (idx) => {
     const i = +idx;
-    if (i < cur) {
+    if (i < cur && clozeAnswers[i]._skip) {
+      return `<span class="cz-skip">${esc(clozeAnswers[i].answer)}</span>`;
+    } else if (i < cur) {
       const ok = clozeAnswers[i]._ok;
       const col = ok ? 'var(--accent)' : 'var(--red)';
       return `<span style="color:${col};border-bottom:2px solid ${col};padding:0 3px;">${esc(clozeAnswers[i].answer)}</span>`;
@@ -3524,6 +3534,38 @@ function renderClozeStep(card) {
   if (mainArea) mainArea.scrollTop = scrollY;
 }
 
+// All blanks done (answered, shown or revealed): summarise, then go on to the recall questions or the rating buttons
+function finishCloze(card, input, fb) {
+  renderClozeStep(card);
+  input.style.display = 'none';
+  document.getElementById('cloze-input-row').style.display = 'none';
+  const total = clozeAnswers.length, shown = clozeAnswers.filter(a => a._skip).length, graded = total - shown;
+  if (!graded) { fb.textContent = 'Revealed · not marked'; fb.className = 'feedback skip'; }
+  else {
+    const perfect = clozeCorrect === graded;
+    fb.textContent = (perfect ? '✓ all correct' : `${clozeCorrect}/${graded} correct`) + (shown ? ` · ${shown} shown` : '');
+    fb.className = 'feedback ' + (perfect ? 'ok' : 'bad');
+  }
+  if (card.questions && card.questions.length) startClozeQuestions(card);
+  else document.getElementById('rating-grid').classList.add('show');
+}
+// "Show" fills in the current blank, "Reveal all" fills in every remaining one: neutral purple, not counted right or wrong
+function skipClozeBlank(all) {
+  const card = revQueue[revIdx];
+  const input = document.getElementById('cloze-ans');
+  if (!input || clozeBlankIdx >= clozeAnswers.length) return;
+  const fb = document.getElementById('cloze-fb');
+  if (all) { for (let i = clozeBlankIdx; i < clozeAnswers.length; i++) clozeAnswers[i]._skip = true; clozeBlankIdx = clozeAnswers.length; }
+  else { clozeAnswers[clozeBlankIdx]._skip = true; clozeBlankIdx++; }
+  if (clozeBlankIdx >= clozeAnswers.length) { finishCloze(card, input, fb); }
+  else {
+    renderClozeStep(card);
+    fb.textContent = ''; fb.className = 'feedback';
+    input.value = ''; input.classList.remove('err');
+    setTimeout(() => input.focus({ preventScroll: true }), 30);
+  }
+}
+
 function checkCloze() {
   const card = revQueue[revIdx];
   const input = document.getElementById('cloze-ans');
@@ -3539,13 +3581,7 @@ function checkCloze() {
   fb.className = 'feedback ' + (ok ? 'ok' : 'bad');
   clozeBlankIdx++;
   if (clozeBlankIdx >= clozeAnswers.length) {
-    renderClozeStep(card);
-    input.style.display = 'none';
-    document.getElementById('cloze-input-row').style.display = 'none';
-    fb.textContent = clozeCorrect === clozeAnswers.length ? '✓ all correct' : `${clozeCorrect}/${clozeAnswers.length} correct`;
-    fb.className = 'feedback ' + (clozeCorrect === clozeAnswers.length ? 'ok' : 'bad');
-    if (card.questions && card.questions.length) startClozeQuestions(card);
-    else document.getElementById('rating-grid').classList.add('show');
+    finishCloze(card, input, fb);
   } else {
     renderClozeStep(card);
     input.value = '';
