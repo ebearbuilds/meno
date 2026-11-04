@@ -1112,6 +1112,21 @@ body:not(.dark) .review-wrap{position:relative}
   /* ═══ SUBFOLDERS ═══ */
   .folder-children { margin: 2px 0 2px 14px; padding-left: 8px; border-left: 1px solid var(--border); }
   .folder-children .folder-row { padding-left: 8px; }
+
+  /* ═══ FOLDER ⋯ MENU ═══ */
+  .folder-row { position: relative; }
+  .folder-row:hover .folder-due { opacity: 0; }
+  .folder-more { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: none; background: none; color: var(--text-faint); font-size: 16px; line-height: 1; letter-spacing: 1px; padding: 2px 8px; border-radius: 8px; cursor: pointer; opacity: 0; transition: opacity .12s, background .12s; flex-shrink: 0; }
+  .folder-row:hover .folder-more, .folder-more:focus-visible { opacity: 1; }
+  .folder-more:hover { background: var(--fill, rgba(128,128,128,.18)); color: var(--text); }
+  @media (hover: none) { .folder-more { opacity: .7; } }
+  .fmenu { position: fixed; z-index: 700; min-width: 190px; padding: 6px; border-radius: 16px; background: var(--bg-card, var(--bg)); border: 1px solid var(--border-strong); box-shadow: 0 18px 50px rgba(0,0,0,.45); animation: fmIn .12s ease-out; }
+  @keyframes fmIn { from { opacity: 0; transform: translateY(-4px) scale(.98); } to { opacity: 1; transform: none; } }
+  .fmenu button { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 12px; text-align: left; font-family: inherit; font-size: 13px; color: var(--text); background: none; border: none; padding: 8px 10px; border-radius: 10px; cursor: pointer; }
+  .fmenu button:hover { background: var(--bg-hover, rgba(128,128,128,.15)); }
+  .fmenu button.danger { color: var(--red); }
+  .fmenu-note { font-size: 11px; color: var(--text-faint); }
+  .fmenu-sep { height: 1px; background: var(--border); margin: 4px 6px; }
 </style>
 </head>
 <body>
@@ -1868,23 +1883,46 @@ function renderFolderNode(folder) {
   const due = folderDueDeep(folder.id);
   const btn = 'background:none;border:none;color:var(--text-faint);font-size:11px;cursor:pointer;font-family:Inter,-apple-system,sans-serif;padding:0;';
   return `<div>
-      <div class="folder-row" onclick="toggleFolder('${folder.id}')">
+      <div class="folder-row" onclick="toggleFolder('${folder.id}')" oncontextmenu="openFolderMenu(event,'${folder.id}')">
         <span class="folder-chevron${folder.collapsed ? '' : ' open'}">▶</span>
         <span class="folder-name">${esc(folder.name)}</span>
         ${due > 0 ? `<span class="folder-due">${due}</span>` : ''}
+        <button class="folder-more" onclick="openFolderMenu(event,'${folder.id}')" title="Folder actions" aria-label="Folder actions">⋯</button>
       </div>
       <div class="folder-contents${folder.collapsed ? ' collapsed' : ''}">
         ${kids.length ? `<div class="folder-children">${kids.map(renderFolderNode).join('')}</div>` : ''}
         ${folderDecks.map(d => deckItemHTML(d)).join('')}
-        <div style="padding:3px 20px 6px 32px;display:flex;gap:10px;flex-wrap:wrap;">
-          <button style="${btn}" onclick="openDeckModalInFolder('${folder.id}')">+ deck</button>
-          <button style="${btn}" onclick="openFolderModal('${folder.id}')">+ folder</button>
-          <button style="${btn}" onclick="openRenameFolderModal('${folder.id}')">rename</button>
-          <button style="${btn}" onclick="deleteFolder('${folder.id}')">delete</button>
-        </div>
       </div>
     </div>`;
 }
+
+// ─── FOLDER ACTION MENU (⋯ button or right-click on a folder) ───────────────
+function closeFolderMenu() { const m = document.getElementById('folder-menu'); if (m) m.remove(); }
+function openFolderMenu(e, id) {
+  e.preventDefault(); e.stopPropagation();
+  const had = document.getElementById('folder-menu');
+  closeFolderMenu();
+  if (had && had.dataset.for === id && e.type === 'click') return;      // second click on the same ⋯ closes it
+  const f = folderById(id); if (!f) return;
+  const m = document.createElement('div');
+  m.id = 'folder-menu'; m.dataset.for = id; m.className = 'fmenu';
+  const decks = folderDeckCount(id);
+  m.innerHTML = `
+    <button onclick="closeFolderMenu();openDeckModalInFolder('${id}')">New deck here</button>
+    <button onclick="closeFolderMenu();openFolderModal('${id}')">New subfolder</button>
+    <button onclick="closeFolderMenu();openRenameFolderModal('${id}')">Rename or move…</button>
+    <div class="fmenu-sep"></div>
+    <button class="danger" onclick="closeFolderMenu();deleteFolder('${id}')">Delete folder<span class="fmenu-note">${decks ? decks + ' deck' + (decks !== 1 ? 's' : '') + ' move up' : ''}</span></button>`;
+  document.body.appendChild(m);
+  const r = e.currentTarget && e.currentTarget.getBoundingClientRect ? e.currentTarget.getBoundingClientRect() : { left: e.clientX, right: e.clientX, bottom: e.clientY, top: e.clientY };
+  const mw = m.offsetWidth, mh = m.offsetHeight;
+  let x = e.type === 'contextmenu' ? e.clientX : r.right - mw, y = e.type === 'contextmenu' ? e.clientY : r.bottom + 6;
+  x = Math.max(8, Math.min(x, window.innerWidth - mw - 8)); y = Math.max(8, Math.min(y, window.innerHeight - mh - 8));
+  m.style.left = x + 'px'; m.style.top = y + 'px';
+}
+document.addEventListener('click', e => { const m = document.getElementById('folder-menu'); if (m && !m.contains(e.target)) closeFolderMenu(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeFolderMenu(); });
+window.addEventListener('resize', closeFolderMenu);
 function populateParentSelect(selectedId, excludeId) {
   const sel = document.getElementById('folder-parent-select'); if (!sel) return;
   const banned = excludeId ? [excludeId, ...folderDescendantIds(excludeId)] : [];
