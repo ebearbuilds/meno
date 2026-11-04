@@ -1108,6 +1108,10 @@ body:not(.dark) .review-wrap{position:relative}
   .review-complete { animation: rvUp .35s cubic-bezier(.2,.8,.2,1) both; }
   #main-area { overflow-x: hidden; }
   @media (prefers-reduced-motion: reduce) { .review-wrap, .review-wrap.rv-out, .review-wrap.rv-again, .review-complete { animation: none !important; } }
+
+  /* ═══ SUBFOLDERS ═══ */
+  .folder-children { margin: 2px 0 2px 14px; padding-left: 8px; border-left: 1px solid var(--border); }
+  .folder-children .folder-row { padding-left: 8px; }
 </style>
 </head>
 <body>
@@ -1404,6 +1408,8 @@ body:not(.dark) .review-wrap{position:relative}
     <div class="modal-title" id="folder-modal-title">New folder</div>
     <div class="field-label">Folder name</div>
     <input class="text-input" id="folder-name-input" type="text" placeholder="e.g. Security, SWE, Islam..." />
+    <div class="field-label" style="margin-top:14px;">Inside</div>
+    <select class="text-input" id="folder-parent-select" style="cursor:pointer;"></select>
     <div class="modal-actions">
       <button class="btn-cancel" onclick="closeFolderModal()">Cancel</button>
       <button class="btn-save" id="folder-save-btn" onclick="saveFolder()">Create folder</button>
@@ -1522,6 +1528,7 @@ if (!localStorage.getItem(SK)) {
 }
 
 let activeDeckId = null;
+let activeTagFilter = null;
 let editingCardId = null;
 let cardType = 'basic';
 let clozeN = 1;
@@ -1828,31 +1835,70 @@ function logReview() {
 }
 
 // ─── RENDER SIDEBAR ───────────────────────────────────────────────────────────
+
+// ─── FOLDER TREE (subfolders: folder.parentId) ───────────────────────────────
+function folderById(id) { return state.folders.find(f => f.id === id) || null; }
+function folderParent(f) { return f && f.parentId && f.parentId !== f.id ? folderById(f.parentId) : null; }
+function folderPathNames(id) {
+  const names = []; let f = folderById(id), guard = 0;
+  while (f && guard++ < 20) { names.unshift(f.name); f = folderParent(f); }
+  return names;
+}
+function folderLabel(id, sep) { return folderPathNames(id).join(sep || ' / '); }
+function folderChildren(parentId) { return state.folders.filter(f => (f.parentId && folderById(f.parentId) ? f.parentId : null) === (parentId || null)); }
+function folderDescendantIds(id) {
+  const out = []; const walk = pid => folderChildren(pid).forEach(c => { if (!out.includes(c.id)) { out.push(c.id); walk(c.id); } });
+  walk(id); return out;
+}
+function folderTreeOrder() {
+  const out = []; const walk = (pid, depth) => folderChildren(pid).forEach(f => { out.push({ f, depth }); walk(f.id, depth + 1); });
+  walk(null, 0); return out;
+}
+function folderDeckCount(id) {
+  const ids = [id, ...folderDescendantIds(id)];
+  return state.decks.filter(d => ids.includes(d.folderId)).length;
+}
+function folderDueDeep(id) {
+  const ids = [id, ...folderDescendantIds(id)], now = Date.now();
+  return state.decks.filter(d => ids.includes(d.folderId)).reduce((sum, d) => sum + state.cards.filter(c => c.deckId === d.id && c.due <= now).length, 0);
+}
+function renderFolderNode(folder) {
+  const kids = folderChildren(folder.id);
+  const folderDecks = state.decks.filter(d => d.folderId === folder.id);
+  const due = folderDueDeep(folder.id);
+  const btn = 'background:none;border:none;color:var(--text-faint);font-size:11px;cursor:pointer;font-family:Inter,-apple-system,sans-serif;padding:0;';
+  return `<div>
+      <div class="folder-row" onclick="toggleFolder('${folder.id}')">
+        <span class="folder-chevron${folder.collapsed ? '' : ' open'}">▶</span>
+        <span class="folder-name">${esc(folder.name)}</span>
+        ${due > 0 ? `<span class="folder-due">${due}</span>` : ''}
+      </div>
+      <div class="folder-contents${folder.collapsed ? ' collapsed' : ''}">
+        ${kids.length ? `<div class="folder-children">${kids.map(renderFolderNode).join('')}</div>` : ''}
+        ${folderDecks.map(d => deckItemHTML(d)).join('')}
+        <div style="padding:3px 20px 6px 32px;display:flex;gap:10px;flex-wrap:wrap;">
+          <button style="${btn}" onclick="openDeckModalInFolder('${folder.id}')">+ deck</button>
+          <button style="${btn}" onclick="openFolderModal('${folder.id}')">+ folder</button>
+          <button style="${btn}" onclick="openRenameFolderModal('${folder.id}')">rename</button>
+          <button style="${btn}" onclick="deleteFolder('${folder.id}')">delete</button>
+        </div>
+      </div>
+    </div>`;
+}
+function populateParentSelect(selectedId, excludeId) {
+  const sel = document.getElementById('folder-parent-select'); if (!sel) return;
+  const banned = excludeId ? [excludeId, ...folderDescendantIds(excludeId)] : [];
+  sel.innerHTML = '<option value="">— Top level —</option>' + folderTreeOrder().filter(x => !banned.includes(x.f.id))
+    .map(x => `<option value="${x.f.id}"${selectedId === x.f.id ? ' selected' : ''}>${'  '.repeat(x.depth)}${esc(x.f.name)}</option>`).join('');
+}
+
 function renderSidebar() {
   const list = document.getElementById('deck-list');
   let html = '';
 
-  state.folders.forEach(folder => {
-    const folderDecks = state.decks.filter(d => d.folderId === folder.id);
-    const folderDue = folderDecks.reduce((sum, d) => sum + state.cards.filter(c => c.deckId === d.id && c.due <= Date.now()).length, 0);
-    html += `<div>
-      <div class="folder-row" onclick="toggleFolder('${folder.id}')">
-        <span class="folder-chevron${folder.collapsed ? '' : ' open'}">▶</span>
-        <span class="folder-name">${esc(folder.name)}</span>
-        ${folderDue > 0 ? `<span class="folder-due">${folderDue}</span>` : ''}
-      </div>
-      <div class="folder-contents${folder.collapsed ? ' collapsed' : ''}">
-        ${folderDecks.map(d => deckItemHTML(d)).join('')}
-        <div style="padding:3px 20px 6px 32px;display:flex;gap:10px;">
-          <button style="background:none;border:none;color:var(--text-faint);font-size:11px;cursor:pointer;font-family:Inter,-apple-system,sans-serif;padding:0;" onclick="openDeckModalInFolder('${folder.id}')">+ deck</button>
-          <button style="background:none;border:none;color:var(--text-faint);font-size:11px;cursor:pointer;font-family:Inter,-apple-system,sans-serif;padding:0;" onclick="openRenameFolderModal('${folder.id}')">rename</button>
-          <button style="background:none;border:none;color:var(--text-faint);font-size:11px;cursor:pointer;font-family:Inter,-apple-system,sans-serif;padding:0;" onclick="deleteFolder('${folder.id}')">delete</button>
-        </div>
-      </div>
-    </div>`;
-  });
+  folderChildren(null).forEach(folder => { html += renderFolderNode(folder); });
 
-  const ungrouped = state.decks.filter(d => !d.folderId);
+  const ungrouped = state.decks.filter(d => !d.folderId || !folderById(d.folderId));
   if (ungrouped.length > 0) {
     if (state.folders.length > 0) html += `<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-faint);font-family:'JetBrains Mono',monospace;padding:10px 20px 4px;">Ungrouped</div>`;
     html += ungrouped.map(d => deckItemHTML(d, true)).join('');
@@ -2069,7 +2115,7 @@ function renderDeckMain() {
     <div class="main">
       <div class="deck-header">
         <div>
-          ${folder ? `<div style="font-size:11px;color:var(--purple);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">${esc(folder.name)}</div>` : ''}
+          ${folder ? `<div style="font-size:11px;color:var(--purple);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">${esc(folderLabel(folder.id, ' › '))}</div>` : ''}
           <div class="deck-title">${esc(deck.name)}</div>
           <div class="deck-meta">${allCards.length} card${allCards.length !== 1 ? 's' : ''} · ${due} due${filterLabel}</div>
         </div>
@@ -2115,7 +2161,7 @@ function decorateDeckPage(deck) {
   props.innerHTML = `<div class="nt-p"><span class="k">Cards</span><span class="v">${cs.length}</span></div>
     <div class="nt-p"><span class="k">Due</span><span class="v">${dd ? chip(dd + ' due now', p[1]) : chip('Up to date', p[3])}</span></div>
     <div class="nt-p"><span class="k">Next review</span><span class="v">${next ? (next <= now ? 'Now' : fmt(next)) : '—'}</span></div>
-    ${f ? `<div class="nt-p"><span class="k">Folder</span><span class="v">${chip(f.name, p[2])}</span></div>` : ''}
+    ${f ? `<div class="nt-p"><span class="k">Folder</span><span class="v">${chip(folderLabel(f.id, ' › '), p[2])}</span></div>` : ''}
     ${types.length ? `<div class="nt-p"><span class="k">Types</span><span class="v">${types.map(t => chip(t, p[0])).join('')}</span></div>` : ''}`;
   main.querySelector('.deck-header').insertAdjacentElement('afterend', props);
 }
@@ -2233,8 +2279,10 @@ function cardRow(c) {
 
 // ─── FOLDER CRUD ──────────────────────────────────────────────────────────────
 let editingFolderId = null;
-function openFolderModal() {
+function openFolderModal(parentId) {
   editingFolderId = null;
+  populateParentSelect(typeof parentId === 'string' ? parentId : null, null);
+  if (typeof parentId === 'string') { const pf = folderById(parentId); if (pf) pf.collapsed = false; }
   document.getElementById('folder-modal-title').textContent = 'New folder';
   document.getElementById('folder-save-btn').textContent = 'Create folder';
   document.getElementById('folder-name-input').value = '';
@@ -2246,7 +2294,8 @@ function openRenameFolderModal(id) {
   const f = state.folders.find(x => x.id === id);
   if (!f) return;
   editingFolderId = id;
-  document.getElementById('folder-modal-title').textContent = 'Rename folder';
+  document.getElementById('folder-modal-title').textContent = 'Edit folder';
+  populateParentSelect(f.parentId || null, id);
   document.getElementById('folder-save-btn').textContent = 'Save';
   const input = document.getElementById('folder-name-input');
   input.value = f.name;
@@ -2260,18 +2309,22 @@ function saveFolder() {
   if (!name) return;
   if (editingFolderId) {
     const f = state.folders.find(x => x.id === editingFolderId);
-    if (f) f.name = name;
+    if (f) { f.name = name; const np = document.getElementById('folder-parent-select').value || null; if (np) f.parentId = np; else delete f.parentId; }
     editingFolderId = null;
     save(); closeFolderModal(); renderSidebar();
     // refresh the folder name shown above the deck title, but never clobber an in-progress review
     if (activeDeckId && !document.getElementById('rev-del-btn')) renderDeckMain();
     return;
   }
-  state.folders.push({ id: 'folder_' + Date.now(), name, collapsed: false });
+  const parentId = document.getElementById('folder-parent-select').value || null;
+  const nf = { id: 'folder_' + Date.now(), name, collapsed: false }; if (parentId) nf.parentId = parentId;
+  state.folders.push(nf);
   save(); closeFolderModal(); renderSidebar();
 }
 function deleteFolder(id) {
-  state.decks.forEach(d => { if (d.folderId === id) d.folderId = null; });
+  const gone = folderById(id); const up = gone && gone.parentId && folderById(gone.parentId) ? gone.parentId : null;
+  state.decks.forEach(d => { if (d.folderId === id) d.folderId = up; });
+  state.folders.forEach(f => { if (f.parentId === id) { if (up) f.parentId = up; else delete f.parentId; } });
   state.folders = state.folders.filter(f => f.id !== id);
   save(); renderSidebar();
 }
@@ -2280,7 +2333,7 @@ function deleteFolder(id) {
 function populateFolderSelect(selectedId) {
   const sel = document.getElementById('deck-folder-select');
   sel.innerHTML = '<option value="">— No folder —</option>' +
-    state.folders.map(f => `<option value="${f.id}"${selectedId === f.id ? ' selected' : ''}>${esc(f.name)}</option>`).join('');
+    folderTreeOrder().map(x => `<option value="${x.f.id}"${selectedId === x.f.id ? ' selected' : ''}>${'\u00a0\u00a0'.repeat(x.depth)}${esc(x.f.name)}</option>`).join('');
 }
 function openDeckModal() {
   document.getElementById('deck-modal-title').textContent = 'New deck';
@@ -2354,7 +2407,7 @@ function deleteDeck(id) {
 }
 function populateDeckPick(selId) {
   const sel = document.getElementById('card-deck-pick'); if (!sel) return;
-  const label = d => { const f = d.folderId ? state.folders.find(x => x.id === d.folderId) : null; return (f ? f.name + ' / ' : '') + d.name; };
+  const label = d => { const f = d.folderId ? state.folders.find(x => x.id === d.folderId) : null; return (f ? folderLabel(f.id) + ' / ' : '') + d.name; };
   sel.innerHTML = state.decks.map(d => `<option value="${d.id}">${esc(label(d))}</option>`).join('');
   const want = selId || activeDeckId || window._lastCardDeck;
   if (want && state.decks.some(d => d.id === want)) sel.value = want;
@@ -2365,7 +2418,7 @@ function syncDeckPickLabel() {
   const sel = document.getElementById('card-deck-pick'), btn = document.getElementById('dp-btn'); if (!sel || !btn) return;
   const d = state.decks.find(x => x.id === sel.value);
   const f = d && d.folderId ? state.folders.find(x => x.id === d.folderId) : null;
-  btn.textContent = d ? (f ? f.name + ' / ' : '') + d.name : 'Choose a deck…';
+  btn.textContent = d ? (f ? folderLabel(f.id) + ' / ' : '') + d.name : 'Choose a deck…';
 }
 function toggleDeckPick(e) {
   if (e) e.stopPropagation();
@@ -2376,7 +2429,7 @@ function toggleDeckPick(e) {
 function renderDeckPickList() {
   const q = (document.getElementById('dp-search').value || '').trim().toLowerCase();
   const cur = document.getElementById('card-deck-pick').value;
-  const fname = d => { const f = d.folderId ? state.folders.find(x => x.id === d.folderId) : null; return f ? f.name : ''; };
+  const fname = d => { const f = d.folderId ? state.folders.find(x => x.id === d.folderId) : null; return f ? folderLabel(f.id) : ''; };
   const item = d => `<div class="dp-item${d.id === cur ? ' cur' : ''}" data-id="${d.id}" onclick="pickDeck('${d.id}')">${esc(d.name)}</div>`;
   let html = '';
   if (q) {
@@ -2385,7 +2438,7 @@ function renderDeckPickList() {
   } else {
     const rec = (window._recentDecks || []).map(id => state.decks.find(d => d.id === id)).filter(Boolean).slice(0, 3);
     if (rec.length) html += '<div class="dp-grp">Recent</div>' + rec.map(item).join('');
-    state.folders.forEach(f => { const ds = state.decks.filter(d => d.folderId === f.id); if (ds.length) html += `<div class="dp-grp">${esc(f.name)}</div>` + ds.map(item).join(''); });
+    folderTreeOrder().forEach(({ f }) => { const ds = state.decks.filter(d => d.folderId === f.id); if (ds.length) html += `<div class="dp-grp">${esc(folderLabel(f.id))}</div>` + ds.map(item).join(''); });
     const loose = state.decks.filter(d => !d.folderId || !state.folders.some(f => f.id === d.folderId));
     if (loose.length) html += '<div class="dp-grp">No folder</div>' + loose.map(item).join('');
   }
@@ -3895,7 +3948,7 @@ function renderLinkResults() {
     const front = c.type === 'cloze'
       ? (c.clozeText || '').replace(/\{\{c\d+::(.*?)\}\}/g, '$1').slice(0, 80)
       : (c.front || '').slice(0, 80);
-    const path = [folder?.name, deck?.name].filter(Boolean).join(' › ');
+    const path = [folder ? folderLabel(folder.id, ' › ') : '', deck?.name].filter(Boolean).join(' › ');
     // highlight match
     const idx = front.toLowerCase().indexOf(q);
     const highlighted = idx >= 0
@@ -3937,7 +3990,7 @@ function openLinkedCard(cardId) {
   if (!card) return;
   const deck = state.decks.find(d => d.id === card.deckId);
   const folder = deck?.folderId ? state.folders.find(f => f.id === deck.folderId) : null;
-  const path = [folder?.name, deck?.name].filter(Boolean).join(' › ');
+  const path = [folder ? folderLabel(folder.id, ' › ') : '', deck?.name].filter(Boolean).join(' › ');
 
   viewingLinkedCardId = cardId;
   document.getElementById('lcm-deck').textContent = path;
@@ -5068,7 +5121,7 @@ loadAppTheme();
       if (q && !d.name.toLowerCase().includes(q)) return;
       const f = d.folderId ? state.folders.find(x => x.id === d.folderId) : null;
       const n = state.cards.filter(c => c.deckId === d.id).length;
-      items.push({ kind: 'deck', id: d.id, title: d.name, sub: (f ? f.name + ' · ' : '') + n + ' cards' });
+      items.push({ kind: 'deck', id: d.id, title: d.name, sub: (f ? folderLabel(f.id, ' › ') + ' · ' : '') + n + ' cards' });
     });
     if (q.length >= 2) {
       for (const c of state.cards) {
@@ -5147,7 +5200,7 @@ function renderHome() {
     const cs = state.cards.filter(c => c.deckId === d.id), dd = cs.filter(c => c.due <= now).length;
     const f = d.folderId ? state.folders.find(x => x.id === d.folderId) : null;
     const next = cs.length ? Math.min(...cs.map(c => c.due)) : null;
-    return `<div class="ol-card" onclick="selectDeck('${escAttr(d.id)}')"><div class="ol-art">${olArt(d.id + d.name)}</div><div class="ol-t">${esc(d.name)}</div><div class="ol-m"><span>${f ? esc(f.name) : 'Deck'}</span><span>${dd ? dd + ' due' : cs.length + ' cards'}${next && next > now ? ' · ' + fmt(next) : ''}</span></div></div>`;
+    return `<div class="ol-card" onclick="selectDeck('${escAttr(d.id)}')"><div class="ol-art">${olArt(d.id + d.name)}</div><div class="ol-t">${esc(d.name)}</div><div class="ol-m"><span>${f ? esc(folderLabel(f.id, ' › ')) : 'Deck'}</span><span>${dd ? dd + ' due' : cs.length + ' cards'}${next && next > now ? ' · ' + fmt(next) : ''}</span></div></div>`;
   }).join('');
   const cards = due.slice(0, 6).map(c => {
     const d = state.decks.find(x => x.id === c.deckId);
