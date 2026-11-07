@@ -1133,6 +1133,11 @@ body:not(.dark) .review-wrap{position:relative}
   .btn-skip:hover { color: var(--purple); border-color: var(--purple); }
   .cloze-display span.cz-skip { color: var(--purple); font-weight: 500; border-radius: 8px; padding: 1px 9px; background: color-mix(in srgb, var(--purple) 15%, transparent); }
   .feedback.skip { color: var(--purple); }
+
+  /* ═══ VARY BLANKS ═══ */
+  .vary-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 13px; color: var(--text-muted); flex-wrap: wrap; }
+  .vary-row select { font-family: inherit; font-size: 13px; padding: 7px 12px; border-radius: 12px; border: 1px solid var(--border-strong); background: transparent; color: var(--text); cursor: pointer; }
+  .vary-help { font-size: 11.5px; color: var(--text-faint); line-height: 1.5; margin-top: 6px; max-width: 560px; }
 </style>
 </head>
 <body>
@@ -1258,6 +1263,17 @@ body:not(.dark) .review-wrap{position:relative}
         <button class="rich-btn" onclick="insertWordCloze()" title="Cloze each word individually">+ word cloze</button>
       </div>
       <textarea class="editor-ta" id="ec" placeholder="The capital of France is {{c1::Paris}}..." onkeydown="taKey(event,'ec')" style="min-height:200px;"></textarea>
+      <div class="vary-row">
+        <label for="ecloze-vary">Blanks per review</label>
+        <select id="ecloze-vary">
+          <option value="all">All blanks (default)</option>
+          <option value="1">Vary — hide 1 at a time</option>
+          <option value="2">Vary — hide 2 at a time</option>
+          <option value="3">Vary — hide 3 at a time</option>
+          <option value="half">Vary — hide half</option>
+        </select>
+      </div>
+      <div class="vary-help">With “Vary”, each review hides a different subset of your blanks (the ones you miss most come up more); the rest show as plain text. Works best with 4+ blanks.</div>
       <div class="field-label">Recall questions <span style="color:var(--text-faint);font-size:11px;text-transform:none;letter-spacing:0;">(optional — asked after the blanks, answered from memory)</span></div>
       <div style="font-size:11px;color:var(--text-faint);font-family:'JetBrains Mono',monospace;margin-bottom:8px;line-height:1.6;">Start a question with <code>Q:</code>. Under it, list the key points a good answer should cover, one per line starting with <code>-</code>. Leave a blank line between questions.<br>Optional: add <code>::</code> and trigger words to a point, e.g. <code>- limits damage :: blast radius, compromis</code>. If your answer contains any of them, that point is pre-ticked (partial words work).</div>
       <textarea class="editor-ta" id="ecq" placeholder="Q: What is least privilege?&#10;- users get only the access they need :: minimum, only&#10;- limits the damage if an account is compromised :: damage, blast radius" style="min-height:110px;font-family:'JetBrains Mono',monospace;"></textarea>
@@ -1810,8 +1826,32 @@ function applyStructure(html) {
 }
 function getClozeAnswers(text) {
   const re = /\{\{c(\d+)::(.+?)\}\}/g; const out = []; let m;
-  while ((m = re.exec(text)) !== null) out.push({ n: +m[1], answer: m[2] });
+  while ((m = re.exec(text)) !== null) out.push({ n: +m[1], answer: m[2], idx: out.length });
   return out;
+}
+// Vary blanks: choose which of the card's blanks to hide this time. Missed and not-recently-seen blanks are favoured.
+let clozeAll = [];
+function blankKey(a) { return String(a.answer).trim().toLowerCase(); }
+function pickReviewBlanks(card) {
+  const all = getClozeAnswers(card.clozeText);
+  const v = card.varyBlanks;
+  if (!v || all.length < 2) return all;
+  const want = v === 'half' ? Math.ceil(all.length / 2) : Math.max(1, +v || all.length);
+  if (want >= all.length) return all;
+  const stats = card.blankStats || {}, now = Date.now();
+  const scored = all.map(a => {
+    const st = stats[blankKey(a)] || { seen: 0, miss: 0, last: 0 };
+    const days = st.last ? Math.min(14, (now - st.last) / 86400000) : 14;
+    return { a, score: st.miss * 2 + days * 0.3 + (st.seen ? 0 : 1.5) + Math.random() * 1.5 };
+  });
+  scored.sort((x, y) => y.score - x.score);
+  return scored.slice(0, want).map(x => x.a).sort((x, y) => x.idx - y.idx);
+}
+function bumpBlankStat(card, a, ok) {
+  card.blankStats = card.blankStats || {};
+  const k = blankKey(a), st = card.blankStats[k] || { seen: 0, miss: 0, last: 0 };
+  st.seen++; if (!ok) st.miss++; else if (st.miss > 0 && st.seen % 3 === 0) st.miss--;   // misses fade as you get it right
+  st.last = Date.now(); card.blankStats[k] = st;
 }
 
 // ─── VISUAL HELPERS (generated gradients, review log) ─────────────────────────
@@ -2577,6 +2617,7 @@ function openCardEditor(cardId) {
       document.getElementById('ec').value = c.clozeText || '';
       document.getElementById('ecq').value = questionsToText(c.questions);
       document.getElementById('ecq-split').checked = !!c.questionsSplit;
+      document.getElementById('ecloze-vary').value = c.varyBlanks || 'all';
     }
     currentEditorTags = [...(c.tags || [])];
   } else {
@@ -2587,6 +2628,7 @@ function openCardEditor(cardId) {
     document.getElementById('ec').value = '';
     document.getElementById('ecq').value = '';
     document.getElementById('ecq-split').checked = false;
+    document.getElementById('ecloze-vary').value = 'all';
     document.getElementById('ecode-prompt').value = '';
     document.getElementById('ecode-answer').value = '';
     document.getElementById('ecli-prompt').value = '';
@@ -2752,6 +2794,7 @@ function saveCard() {
     const ct = document.getElementById('ec').value.trim();
     const questions = parseQuestions(document.getElementById('ecq').value);
     const splitQ = document.getElementById('ecq-split').checked;
+    const vary = document.getElementById('ecloze-vary').value;
     document.getElementById('ec').style.borderColor = (ct && ct.includes('{{c')) ? '' : 'var(--red)';
     if (!ct || !ct.includes('{{c')) return;
     if (editingCardId) {
@@ -2760,11 +2803,13 @@ function saveCard() {
         c.clozeText = ct; c.type = 'cloze'; c.tags = [...currentEditorTags];
         if (questions.length) c.questions = questions; else delete c.questions;
         if (questions.length && splitQ) c.questionsSplit = true; else delete c.questionsSplit;
+        if (vary !== 'all') c.varyBlanks = vary; else delete c.varyBlanks;
       }
     } else {
       const card = { id: 'c_' + Date.now(), deckId: targetDeckId, type: 'cloze', clozeText: ct, interval: 1, due: Date.now(), ease: 2.5, reps: 0, tags: [...currentEditorTags] };
       if (questions.length) card.questions = questions;
       if (questions.length && splitQ) card.questionsSplit = true;
+      if (vary !== 'all') card.varyBlanks = vary;
       state.cards.push(card);
     }
   } else if (cardType === 'cli') {
@@ -3469,7 +3514,8 @@ function finishClozeQuestions(card) {
 // ─── CLOZE REVIEW ─────────────────────────────────────────────────────────────
 function renderClozeRev(main, card, pct) {
   clozeBlankIdx = 0;
-  clozeAnswers = getClozeAnswers(card.clozeText);
+  clozeAll = getClozeAnswers(card.clozeText);
+  clozeAnswers = pickReviewBlanks(card);
   clozeCorrect = 0;
 
   const sz = card.fontSize || 'md';
@@ -3511,7 +3557,9 @@ function renderClozeStep(card) {
   let html = md(markedText);
 
   const replaceMarker = (idx) => {
-    const i = +idx;
+    const orig = +idx;
+    const i = clozeAnswers.findIndex(a => a.idx === orig);
+    if (i < 0) return esc((clozeAll[orig] || {}).answer || '');       // not hidden this review: show it as plain text
     if (i < cur && clozeAnswers[i]._skip) {
       return `<span class="cz-skip">${esc(clozeAnswers[i].answer)}</span>`;
     } else if (i < cur) {
@@ -3575,6 +3623,7 @@ function checkCloze() {
   if (!ans) return;
   const ok = norm(typed) === norm(ans.answer);
   ans._ok = ok;
+  bumpBlankStat(card, ans, ok);
   if (ok) clozeCorrect++;
   const fb = document.getElementById('cloze-fb');
   fb.textContent = ok ? '✓ correct' : '✗ ' + ans.answer;
